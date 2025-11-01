@@ -1,0 +1,83 @@
+name: Go build
+
+on:
+  push:
+    branches: [ trunk ]
+  pull_request:
+    branches: [ trunk ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            /go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Show Go env (diagnostics)
+        run: |
+          go env GOPROXY GOSUMDB GOPRIVATE GONOSUMDB
+
+      - name: Build `gh` (vendor-aware)
+        run: |
+          # Prefer vendor mode (reproducible). If no vendor/ directory, use official proxy & sumdb.
+          if [ -d vendor ]; then
+            echo "Building with vendor mode"
+            GOFLAGS=-mod=vendor go build -v ./cmd/gh
+          else
+            echo "Building with GOPROXY=https://proxy.golang.org,direct and GOSUMDB=sum.golang.org"
+            GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org go build -v ./cmd/gh
+          fi
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      - name: Build cross-platform binary
+        env:
+          GOOS: ${{ matrix.os == 'windows-latest' && 'windows' || (matrix.os == 'macos-latest' && 'darwin' || 'linux') }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          # Map runner labels to GOOS
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then export GOOS=windows; fi
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then export GOOS=darwin; fi
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then export GOOS=linux; fi
+
+          BIN=gh-${GOOS}-${GOARCH}
+          if [ "$GOOS" = "windows" ]; then BIN=${BIN}.exe; fi
+          echo "Building $BIN"
+          GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org GOOS=${GOOS} GOARCH=${GOARCH} go build -v -o ${BIN} ./cmd/gh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gh-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            gh-*.exe
+            gh-*
